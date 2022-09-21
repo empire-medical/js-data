@@ -180,6 +180,21 @@ import Query from './Query'
 import Record from './Record'
 
 /**
+ * JSData's {@link Relation} class.
+ *
+ * @example
+ * import { Relation } from 'js-data';
+ * let customRelation = Relation.extend({...})
+ *
+ * @name module:js-data.Relation
+ * @see Relation
+ * @since 3.0.0
+ * @tutorial ["http://www.js-data.io/v3.0/docs/components-of-jsdata#Relation","Components of JSData: Relation"]
+ * @type {Constructor}
+ */
+import { Relation } from './Relation'
+
+/**
  * JSData's {@link Schema} class. Implements http://json-schema.org/draft-04.
  *
  * @example
@@ -270,6 +285,7 @@ export {
   Mapper,
   Query,
   Record,
+  Relation,
   Schema,
   Settable,
   SimpleStore,
