@@ -1673,4 +1673,7 @@ export const safeSetLink = function (record, field, value) {
   }
 }
 
+utils.safeSetProp = safeSetProp
+utils.safeSetLink = safeSetLink
+
 export default utils
