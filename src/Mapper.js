@@ -2,7 +2,6 @@ import utils from './utils'
 import Component from './Component'
 import Record from './Record'
 import Schema from './Schema'
-import { Relation } from './relations'
 import {
   belongsTo,
   belongsToType,
@@ -24,7 +23,7 @@ const validatingHooks = [
   'beforeUpdateAll',
   'beforeUpdateMany'
 ]
-const makeNotify = function (num) {
+export const makeNotify = function (num) {
   return function (...args) {
     const opts = args[args.length - num]
     const op = opts.op
@@ -441,6 +440,10 @@ function Mapper (opts) {
     }
   })
 
+  // Move relationship types out of the opts for later use. 
+  const relationshipTypes = opts._relationshipTypes || {}
+  delete opts._relationshipTypes
+
   // Apply user-provided configuration
   utils.fillIn(this, opts)
   // Fill in any missing options with the defaults
@@ -501,10 +504,30 @@ function Mapper (opts) {
       this.schema.apply(this.recordClass.prototype)
     }
   }
+
+  // Create instatiator functions for each relationship type. 
+  utils.forOwn(relationshipTypes, (relDef, typeName) => {
+    if (!Object.prototype.hasOwnProperty.call(this, typeName) && relDef.RelationshipClass) {
+      Object.defineProperty(this, typeName, {
+        value: (relatedMapper, def) => {
+          return new relDef.RelationshipClass(relatedMapper, def).assignTo(this)
+        }
+      })
+    }
+  })
 }
 
 export default Component.extend({
   constructor: Mapper,
+
+  /**
+   * Helper function that creates a notification function.
+   *
+   * @method Mapper#makeNotify
+   * @param {number} num The number of arguments the resultant notification function ignores.
+   * @since 3.1.0
+   */
+  makeNotify: makeNotify,
 
   /**
    * Mapper lifecycle hook called by {@link Mapper#count}. If this method
@@ -2466,7 +2489,7 @@ export default Component.extend({
    * @ignore
    */
   defineRelations () {
-    // Setup the mapper's relations, including generating Mapper#relationList
+    // Set up the mapper's relations, including generating Mapper#relationList
     // and Mapper#relationFields
     utils.forOwn(this.relations, (group, type) => {
       utils.forOwn(group, (relations, _name) => {
@@ -2477,7 +2500,7 @@ export default Component.extend({
           const relatedMapper = this.datastore.getMapperByName(_name) || _name
           def.getRelation = () => this.datastore.getMapper(_name)
 
-          if (typeof Relation[type] !== 'function') {
+          if (typeof this[type] !== 'function') {
             throw utils.err(DOMAIN, 'defineRelations')(400, 'relation type (hasOne, hasMany, etc)', type, true)
           }
 
