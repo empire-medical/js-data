@@ -440,7 +440,7 @@ function Mapper (opts) {
     }
   })
 
-  // Move relationship types out of the opts for later use. 
+  // Move relationship types out of the opts for later use.
   const relationshipTypes = opts._relationshipTypes || {}
   delete opts._relationshipTypes
 
@@ -505,7 +505,7 @@ function Mapper (opts) {
     }
   }
 
-  // Create instatiator functions for each relationship type. 
+  // Create instatiator functions for each relationship type.
   utils.forOwn(relationshipTypes, (relDef, typeName) => {
     if (!Object.prototype.hasOwnProperty.call(this, typeName) && relDef.RelationshipClass) {
       Object.defineProperty(this, typeName, {
