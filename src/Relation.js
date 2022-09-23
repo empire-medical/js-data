@@ -1,10 +1,5 @@
 import utils from './utils'
 
-// TODO: remove this when the rest of the project is cleaned
-export const belongsToType = 'belongsTo'
-export const hasManyType = 'hasMany'
-export const hasOneType = 'hasOne'
-
 const DOMAIN = 'Relation'
 
 export function Relation (relatedMapper, options = {}) {
@@ -41,7 +36,8 @@ utils.addHiddenPropsToTarget(Relation.prototype, {
     }
 
     const foreignKey = opts.foreignKey = opts.foreignKey || opts.localKey
-    if (!foreignKey && (opts.type === belongsToType || opts.type === hasOneType)) {
+
+    if (!foreignKey && this.requiresValidForeignKey) {
       throw utils.err(DOMAIN_ERR, 'opts.foreignKey')(400, 'string', foreignKey)
     }
 
