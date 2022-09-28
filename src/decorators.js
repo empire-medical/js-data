@@ -1,4 +1,6 @@
-import { Relation } from './relations'
+import { BelongsToRelation } from './Relation/BelongsTo'
+import { HasManyRelation } from './Relation/HasMany'
+import { HasOneRelation } from './Relation/HasOne'
 
 export { belongsToType, hasManyType, hasOneType } from './relations'
 /**
@@ -17,7 +19,7 @@ export { belongsToType, hasManyType, hasOneType } from './relations'
  */
 export const belongsTo = function (related, opts) {
   return function (mapper) {
-    Relation.belongsTo(related, opts).assignTo(mapper)
+    return new BelongsToRelation(related, opts).assignTo(mapper)
   }
 }
 
@@ -37,7 +39,7 @@ export const belongsTo = function (related, opts) {
  */
 export const hasMany = function (related, opts) {
   return function (mapper) {
-    Relation.hasMany(related, opts).assignTo(mapper)
+    return new HasManyRelation(related, opts).assignTo(mapper)
   }
 }
 
@@ -57,6 +59,6 @@ export const hasMany = function (related, opts) {
  */
 export const hasOne = function (related, opts) {
   return function (mapper) {
-    Relation.hasOne(related, opts).assignTo(mapper)
+    return new HasOneRelation(related, opts).assignTo(mapper)
   }
 }
