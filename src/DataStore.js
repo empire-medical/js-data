@@ -87,6 +87,9 @@ const props = {
   constructor: DataStore,
 
   defineMapper (name, opts) {
+    // This is likely only needed for tests since they don't pass in any opts.
+    opts || (opts = {})
+
     // Complexity of this method is beyond simply using => functions to bind context
     const self = this
 
