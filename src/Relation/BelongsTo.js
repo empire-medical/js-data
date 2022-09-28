@@ -28,6 +28,10 @@ export const BelongsToRelation = Relation.extend({
     return true
   },
 
+  isRequiresValidForeignKey () {
+    return true
+  },
+
   createParentRecord (props, opts) {
     const relationData = this.getLocalField(props)
 
@@ -40,8 +44,7 @@ export const BelongsToRelation = Relation.extend({
     throw new Error('"BelongsTo" relation does not support child creation as it cannot have children.')
   }
 }, {
-  TYPE_NAME: belongsToType,
-  requiresValidForeignKey: true
+  TYPE_NAME: belongsToType
 })
 
 export function createDescriptor (mapper, def, name, store) {

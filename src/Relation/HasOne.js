@@ -15,10 +15,13 @@ export const HasOneRelation = Relation.extend({
 
   isRequiresChildId () {
     return true
+  },
+
+  isRequiresValidForeignKey () {
+    return true
   }
 }, {
-  TYPE_NAME: hasOneType,
-  requiresValidForeignKey: true
+  TYPE_NAME: hasOneType
 })
 
 export function createDescriptor (mapper, def, name, store) {

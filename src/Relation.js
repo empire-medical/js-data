@@ -37,7 +37,7 @@ utils.addHiddenPropsToTarget(Relation.prototype, {
 
     const foreignKey = opts.foreignKey = opts.foreignKey || opts.localKey
 
-    if (!foreignKey && this.requiresValidForeignKey) {
+    if (!foreignKey && this.isRequiresValidForeignKey()) {
       throw utils.err(DOMAIN_ERR, 'opts.foreignKey')(400, 'string', foreignKey)
     }
 
@@ -202,6 +202,10 @@ utils.addHiddenPropsToTarget(Relation.prototype, {
   },
 
   isRequiresParentId () {
+    return false
+  },
+
+  isRequiresValidForeignKey () {
     return false
   },
 
