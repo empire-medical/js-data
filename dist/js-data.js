@@ -1771,6 +1771,8 @@
       utils.set(record, field, value);
     }
   };
+  utils.safeSetProp = safeSetProp;
+  utils.safeSetLink = safeSetLink;
 
   /**
    * A base class which gives instances private properties.
@@ -3377,9 +3379,6 @@
    * @since 3.0.0
    */
 
-  var belongsToType = 'belongsTo';
-  var hasManyType = 'hasMany';
-  var hasOneType = 'hasOne';
   var DOMAIN$2 = 'Relation';
   function Relation(relatedMapper) {
     var options = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {};
@@ -3418,7 +3417,7 @@
 
       var foreignKey = opts.foreignKey = opts.foreignKey || opts.localKey;
 
-      if (!foreignKey && (opts.type === belongsToType || opts.type === hasOneType)) {
+      if (!foreignKey && this.isRequiresValidForeignKey()) {
         throw utils.err(DOMAIN_ERR, 'opts.foreignKey')(400, 'string', foreignKey);
       }
 
@@ -3579,6 +3578,9 @@
     isRequiresParentId: function isRequiresParentId() {
       return false;
     },
+    isRequiresValidForeignKey: function isRequiresValidForeignKey() {
+      return false;
+    },
     isRequiresChildId: function isRequiresChildId() {
       return false;
     },
@@ -3596,43 +3598,7 @@
     }
   });
 
-  var BelongsToRelation = Relation.extend({
-    getForeignKey: function getForeignKey(record) {
-      return utils.get(record, this.foreignKey);
-    },
-    _setForeignKey: function _setForeignKey(record, relatedRecord) {
-      utils.set(record, this.foreignKey, utils.get(relatedRecord, this.getRelation().idAttribute));
-    },
-    findExistingLinksFor: function findExistingLinksFor(record) {
-      // console.log('\tBelongsTo#findExistingLinksFor', record)
-      if (!record) {
-        return;
-      }
-
-      var relatedId = utils.get(record, this.foreignKey);
-
-      if (relatedId !== undefined && relatedId !== null) {
-        return this.relatedCollection.get(relatedId);
-      }
-    },
-    isRequiresParentId: function isRequiresParentId() {
-      return true;
-    },
-    createParentRecord: function createParentRecord(props, opts) {
-      var _this = this;
-
-      var relationData = this.getLocalField(props);
-      return this.createLinked(relationData, opts).then(function (record) {
-        _this.setForeignKey(props, record);
-      });
-    },
-    createChildRecord: function createChildRecord() {
-      throw new Error('"BelongsTo" relation does not support child creation as it cannot have children.');
-    }
-  }, {
-    TYPE_NAME: 'belongsTo'
-  });
-
+  var hasManyType = 'hasMany';
   var HasManyRelation = Relation.extend({
     validateOptions: function validateOptions(related, opts) {
       Relation.prototype.validateOptions.call(this, related, opts);
@@ -3726,9 +3692,216 @@
       return this.getRelation().createMany(props, opts);
     }
   }, {
-    TYPE_NAME: 'hasMany'
+    TYPE_NAME: hasManyType
   });
+  function createDescriptor(mapper, def, name, store) {
+    var relation = def.relation;
+    var localKeys = def.localKeys;
+    var foreignKey = def.foreignKey;
+    var foreignKeys = def.foreignKeys;
+    var localField = def.localField;
+    var path = "links.".concat(localField);
+    var updateOpts = {
+      index: foreignKey
+    };
+    var idAttribute = mapper.idAttribute;
 
+    var getter = function getter() {
+      return this._get(path);
+    }; // TODO: Handle case when belongsTo relation isn't ever defined
+
+
+    if (store._collections[relation] && foreignKey && !store.getCollection(relation).indexes[foreignKey]) {
+      store.getCollection(relation).createIndex(foreignKey);
+    }
+
+    return {
+      // descriptor
+      get: function get() {
+        var current = getter.call(this);
+
+        if (!current) {
+          this._set(path, []);
+        }
+
+        return getter.call(this);
+      },
+      // e.g. post.comments = someComments
+      // or user.groups = someGroups
+      // or group.users = someUsers
+      set: function set(records) {
+        var _this3 = this;
+
+        if (records && !utils.isArray(records)) {
+          records = [records];
+        }
+
+        var id = utils.get(this, mapper.idAttribute);
+        var relatedIdAttribute = def.getRelation().idAttribute;
+        var inverseDef = def.getInverse(mapper);
+        var inverseLocalField = inverseDef.localField;
+        var current = this._get(path) || [];
+        var toLink = [];
+        var toLinkIds = {};
+
+        if (records) {
+          records.forEach(function (record) {
+            // e.g. comment.id
+            var relatedId = utils.get(record, relatedIdAttribute);
+            var currentParent = utils.get(record, inverseLocalField);
+
+            if (currentParent && currentParent !== _this3) {
+              var currentChildrenOfParent = utils.get(currentParent, localField); // e.g. somePost.comments.remove(comment)
+
+              if (relatedId === undefined) {
+                utils.remove(currentChildrenOfParent, function (child) {
+                  return child === record;
+                });
+              } else {
+                utils.remove(currentChildrenOfParent, function (child) {
+                  return child === record || relatedId === utils.get(child, relatedIdAttribute);
+                });
+              }
+            }
+
+            if (relatedId !== undefined) {
+              if (_this3._get('$')) {
+                // Prefer store record
+                record = store.get(relation, relatedId) || record;
+              } // e.g. toLinkIds[comment.id] = comment
+
+
+              toLinkIds[relatedId] = record;
+            }
+
+            toLink.push(record);
+          });
+        } // e.g. post.comments = someComments
+
+
+        if (foreignKey) {
+          current.forEach(function (record) {
+            // e.g. comment.id
+            var relatedId = utils.get(record, relatedIdAttribute);
+
+            if (relatedId === undefined && toLink.indexOf(record) === -1 || relatedId !== undefined && !(relatedId in toLinkIds)) {
+              // Update (unset) inverse relation
+              if (records) {
+                // e.g. comment.post_id = undefined
+                utils.safeSetProp(record, foreignKey, undefined); // e.g. CommentCollection.updateIndex(comment, { index: 'post_id' })
+
+                store.getCollection(relation).updateIndex(record, updateOpts);
+              } // e.g. comment.post = undefined
+
+
+              utils.safeSetLink(record, inverseLocalField, undefined);
+            }
+          });
+          toLink.forEach(function (record) {
+            // Update (set) inverse relation
+            // e.g. comment.post_id = post.id
+            utils.safeSetProp(record, foreignKey, id); // e.g. CommentCollection.updateIndex(comment, { index: 'post_id' })
+
+            store.getCollection(relation).updateIndex(record, updateOpts); // e.g. comment.post = post
+
+            utils.safeSetLink(record, inverseLocalField, _this3);
+          });
+        } else if (localKeys) {
+          // Update locals
+          // e.g. group.users = someUsers
+          // Update (set) inverse relation
+          var ids = toLink.map(function (child) {
+            return utils.get(child, relatedIdAttribute);
+          }).filter(function (id) {
+            return id !== undefined;
+          }); // e.g. group.user_ids = [1,2,3,...]
+
+          utils.set(this, localKeys, ids); // Update (unset) inverse relation
+
+          if (inverseDef.foreignKeys) {
+            current.forEach(function (child) {
+              var relatedId = utils.get(child, relatedIdAttribute);
+
+              if (relatedId === undefined && toLink.indexOf(child) === -1 || relatedId !== undefined && !(relatedId in toLinkIds)) {
+                // Update inverse relation
+                // utils.safeSetLink(child, inverseLocalField, undefined)
+                var parents = utils.get(child, inverseLocalField) || []; // e.g. someUser.groups.remove(group)
+
+                if (id === undefined) {
+                  utils.remove(parents, function (parent) {
+                    return parent === _this3;
+                  });
+                } else {
+                  utils.remove(parents, function (parent) {
+                    return parent === _this3 || id === utils.get(parent, idAttribute);
+                  });
+                }
+              }
+            });
+            toLink.forEach(function (child) {
+              // Update (set) inverse relation
+              var parents = utils.get(child, inverseLocalField); // e.g. someUser.groups.push(group)
+
+              if (id === undefined) {
+                utils.noDupeAdd(parents, _this3, function (parent) {
+                  return parent === _this3;
+                });
+              } else {
+                utils.noDupeAdd(parents, _this3, function (parent) {
+                  return parent === _this3 || id === utils.get(parent, idAttribute);
+                });
+              }
+            });
+          }
+        } else if (foreignKeys) {
+          // e.g. user.groups = someGroups
+          // Update (unset) inverse relation
+          current.forEach(function (parent) {
+            var ids = utils.get(parent, foreignKeys) || []; // e.g. someGroup.user_ids.remove(user.id)
+
+            utils.remove(ids, function (_key) {
+              return id === _key;
+            });
+            var children = utils.get(parent, inverseLocalField); // e.g. someGroup.users.remove(user)
+
+            if (id === undefined) {
+              utils.remove(children, function (child) {
+                return child === _this3;
+              });
+            } else {
+              utils.remove(children, function (child) {
+                return child === _this3 || id === utils.get(child, idAttribute);
+              });
+            }
+          }); // Update (set) inverse relation
+
+          toLink.forEach(function (parent) {
+            var ids = utils.get(parent, foreignKeys) || [];
+            utils.noDupeAdd(ids, id, function (_key) {
+              return id === _key;
+            });
+            var children = utils.get(parent, inverseLocalField);
+
+            if (id === undefined) {
+              utils.noDupeAdd(children, _this3, function (child) {
+                return child === _this3;
+              });
+            } else {
+              utils.noDupeAdd(children, _this3, function (child) {
+                return child === _this3 || id === utils.get(child, idAttribute);
+              });
+            }
+          });
+        }
+
+        this._set(path, toLink);
+
+        return toLink;
+      }
+    };
+  }
+
+  var hasOneType = 'hasOne';
   var HasOneRelation = Relation.extend({
     findExistingLinksFor: function findExistingLinksFor(relatedMapper, record) {
       var recordId = utils.get(record, relatedMapper.idAttribute);
@@ -3740,16 +3913,241 @@
     },
     isRequiresChildId: function isRequiresChildId() {
       return true;
+    },
+    isRequiresValidForeignKey: function isRequiresValidForeignKey() {
+      return true;
     }
   }, {
-    TYPE_NAME: 'hasOne'
+    TYPE_NAME: hasOneType
   });
+  function createDescriptor$1(mapper, def, name, store) {
+    var relation = def.relation;
+    var foreignKey = def.foreignKey;
+    var localField = def.localField;
+    var path = "links.".concat(localField);
+    var updateOpts = {
+      index: foreignKey
+    }; // TODO: Handle case when belongsTo relation isn't ever defined
 
-  [BelongsToRelation, HasManyRelation, HasOneRelation].forEach(function (RelationType) {
-    Relation[RelationType.TYPE_NAME] = function (related, options) {
-      return new RelationType(related, options);
+    if (store._collections[relation] && foreignKey && !store.getCollection(relation).indexes[foreignKey]) {
+      store.getCollection(relation).createIndex(foreignKey);
+    } // descriptor
+
+
+    return {
+      // e.g. user.profile = someProfile
+      set: function set(record) {
+        var current = this._get(path);
+
+        if (record === current) {
+          return current;
+        }
+
+        var inverseLocalField = def.getInverse(mapper).localField; // Update (unset) inverse relation
+
+        if (current) {
+          utils.safeSetProp(current, foreignKey, undefined);
+          store.getCollection(relation).updateIndex(current, updateOpts);
+          utils.safeSetLink(current, inverseLocalField, undefined);
+        }
+
+        if (record) {
+          var relatedId = utils.get(record, def.getRelation().idAttribute); // Prefer store record
+
+          if (relatedId !== undefined) {
+            record = store.get(relation, relatedId) || record;
+          } // Set locals
+
+
+          utils.safeSetLink(this, localField, record); // Update (set) inverse relation
+
+          utils.safeSetProp(record, foreignKey, utils.get(this, mapper.idAttribute));
+          store.getCollection(relation).updateIndex(record, updateOpts);
+          utils.safeSetLink(record, inverseLocalField, this);
+        } else {
+          // Unset locals
+          utils.safeSetLink(this, localField, undefined);
+        }
+
+        return record;
+      }
     };
+  }
+
+  var belongsToType = 'belongsTo';
+  var BelongsToRelation = Relation.extend({
+    getForeignKey: function getForeignKey(record) {
+      return utils.get(record, this.foreignKey);
+    },
+    _setForeignKey: function _setForeignKey(record, relatedRecord) {
+      utils.set(record, this.foreignKey, utils.get(relatedRecord, this.getRelation().idAttribute));
+    },
+    findExistingLinksFor: function findExistingLinksFor(record) {
+      if (!record) {
+        return;
+      }
+
+      var relatedId = utils.get(record, this.foreignKey);
+
+      if (relatedId !== undefined && relatedId !== null) {
+        return this.relatedCollection.get(relatedId);
+      }
+    },
+    isRequiresParentId: function isRequiresParentId() {
+      return true;
+    },
+    isRequiresValidForeignKey: function isRequiresValidForeignKey() {
+      return true;
+    },
+    createParentRecord: function createParentRecord(props, opts) {
+      var _this = this;
+
+      var relationData = this.getLocalField(props);
+      return this.createLinked(relationData, opts).then(function (record) {
+        _this.setForeignKey(props, record);
+      });
+    },
+    createChildRecord: function createChildRecord() {
+      throw new Error('"BelongsTo" relation does not support child creation as it cannot have children.');
+    }
+  }, {
+    TYPE_NAME: belongsToType
   });
+  function createDescriptor$2(mapper, def, name, store) {
+    var idAttribute = mapper.idAttribute; // todo: fix this
+
+    var collection = store.getCollection(name);
+    var relation = def.relation;
+    var foreignKey = def.foreignKey;
+    var localField = def.localField;
+    var path = "links.".concat(localField);
+    var updateOpts = {
+      index: foreignKey
+    };
+
+    if (!collection.indexes[foreignKey]) {
+      collection.createIndex(foreignKey);
+    }
+
+    var descriptor = {
+      // e.g. profile.user = someUser
+      // or comment.post = somePost
+      set: function set(record) {
+        // e.g. const otherUser = profile.user
+        var currentParent = this._get(path); // e.g. profile.user === someUser
+
+
+        if (record === currentParent) {
+          return currentParent;
+        }
+
+        var id = utils.get(this, idAttribute);
+        var inverseDef = def.getInverse(mapper); // e.g. profile.user !== someUser
+        // or comment.post !== somePost
+
+        if (currentParent && inverseDef) {
+          this.removeInverseRelation(currentParent, id, inverseDef, idAttribute);
+        }
+
+        if (record) {
+          // e.g. profile.user = someUser
+          var relatedIdAttribute = def.getRelation().idAttribute;
+          var relatedId = utils.get(record, relatedIdAttribute); // Prefer store record
+
+          if (relatedId !== undefined && this._get('$')) {
+            record = store.get(relation, relatedId) || record;
+          } // Set locals
+          // e.g. profile.user = someUser
+          // or comment.post = somePost
+
+
+          utils.safeSetLink(this, localField, record);
+          utils.safeSetProp(this, foreignKey, relatedId);
+          collection.updateIndex(this, updateOpts);
+
+          if (inverseDef) {
+            this.setupInverseRelation(record, id, inverseDef, idAttribute);
+          }
+        } else {
+          // Unset in-memory link only
+          // e.g. profile.user = undefined
+          // or comment.post = undefined
+          utils.safeSetLink(this, localField, undefined);
+        }
+
+        return record;
+      }
+    };
+    var foreignKeyDescriptor = Object.getOwnPropertyDescriptor(mapper.recordClass.prototype, foreignKey);
+
+    if (!foreignKeyDescriptor) {
+      foreignKeyDescriptor = {
+        enumerable: true
+      };
+    }
+
+    var originalGet = foreignKeyDescriptor.get;
+
+    foreignKeyDescriptor.get = function () {
+      if (originalGet) {
+        return originalGet.call(this);
+      }
+
+      return this._get("props.".concat(foreignKey));
+    };
+
+    var originalSet = foreignKeyDescriptor.set;
+
+    foreignKeyDescriptor.set = function (value) {
+      var _this2 = this;
+
+      if (originalSet) {
+        originalSet.call(this, value);
+      }
+
+      var currentParent = utils.get(this, localField);
+      var id = utils.get(this, idAttribute);
+      var inverseDef = def.getInverse(mapper);
+      var currentParentId = currentParent ? utils.get(currentParent, def.getRelation().idAttribute) : undefined;
+
+      if (inverseDef && currentParent && currentParentId !== undefined && currentParentId !== value) {
+        if (inverseDef.type === hasOneType) {
+          utils.safeSetLink(currentParent, inverseDef.localField, undefined);
+        } else if (inverseDef.type === hasManyType) {
+          var children = utils.get(currentParent, inverseDef.localField);
+
+          if (id === undefined) {
+            utils.remove(children, function (child) {
+              return child === _this2;
+            });
+          } else {
+            utils.remove(children, function (child) {
+              return child === _this2 || id === utils.get(child, idAttribute);
+            });
+          }
+        }
+      }
+
+      utils.safeSetProp(this, foreignKey, value);
+      collection.updateIndex(this, updateOpts);
+
+      if (value === undefined || value === null) {
+        if (currentParentId !== undefined) {
+          // Unset locals
+          utils.set(this, localField, undefined);
+        }
+      } else if (this._get('$')) {
+        var storeRecord = store.get(relation, value);
+
+        if (storeRecord) {
+          utils.set(this, localField, storeRecord);
+        }
+      }
+    };
+
+    Object.defineProperty(mapper.recordClass.prototype, foreignKey, foreignKeyDescriptor);
+    return descriptor;
+  }
 
   /**
    * BelongsTo relation decorator. You probably won't use this directly.
@@ -3768,7 +4166,7 @@
 
   var belongsTo = function belongsTo(related, opts) {
     return function (mapper) {
-      Relation.belongsTo(related, opts).assignTo(mapper);
+      return new BelongsToRelation(related, opts).assignTo(mapper);
     };
   };
   /**
@@ -3788,7 +4186,7 @@
 
   var hasMany = function hasMany(related, opts) {
     return function (mapper) {
-      Relation.hasMany(related, opts).assignTo(mapper);
+      return new HasManyRelation(related, opts).assignTo(mapper);
     };
   };
   /**
@@ -3808,7 +4206,7 @@
 
   var hasOne = function hasOne(related, opts) {
     return function (mapper) {
-      Relation.hasOne(related, opts).assignTo(mapper);
+      return new HasOneRelation(related, opts).assignTo(mapper);
     };
   };
 
@@ -7547,7 +7945,6 @@
   var DOMAIN$6 = 'Mapper';
   var applyDefaultsHooks = ['beforeCreate', 'beforeCreateMany'];
   var validatingHooks = ['beforeCreate', 'beforeCreateMany', 'beforeUpdate', 'beforeUpdateAll', 'beforeUpdateMany'];
-
   var makeNotify = function makeNotify(num) {
     return function () {
       var _this = this;
@@ -7604,7 +8001,6 @@
       }
     };
   }; // These are the default implementations of all of the lifecycle hooks
-
 
   var notify = makeNotify(1);
   var notify2 = makeNotify(2); // This object provides meta information used by Mapper#crud to actually
@@ -7677,6 +8073,29 @@
      * @tutorial ["http://www.js-data.io/v3.0/docs/connecting-to-a-data-source","Connecting to a data source"]
      */
     _adapters: {},
+
+    /**
+     * Hash of registered relationship types. Don't modify directly. Use
+     * {@link DataStore#registerRelationshipType} instead.
+     *
+     * @default {}
+     * @name Mapper#_relationshipTypes
+     * @since 3.1.0
+     */
+    _relationshipTypes: {
+      belongsToType: {
+        RelationshipClass: BelongsToRelation,
+        createDescriptor: createDescriptor$2
+      },
+      hasManyType: {
+        RelationshipClass: HasManyRelation,
+        createDescriptor: createDescriptor
+      },
+      hasOneType: {
+        RelationshipClass: HasOneRelation,
+        createDescriptor: createDescriptor$1
+      }
+    },
 
     /**
      * Whether {@link Mapper#beforeCreate} and {@link Mapper#beforeCreateMany}
@@ -7836,6 +8255,8 @@
    */
 
   function Mapper(opts) {
+    var _this2 = this;
+
     utils.classCallCheck(this, Mapper);
     Component$1.call(this);
     opts || (opts = {}); // Prepare certain properties to be non-enumerable
@@ -7969,7 +8390,10 @@
         value: undefined,
         writable: true
       }
-    }); // Apply user-provided configuration
+    }); // Move relationship types out of the opts for later use.
+
+    var relationshipTypes = opts._relationshipTypes || MAPPER_DEFAULTS._relationshipTypes;
+    delete opts._relationshipTypes; // Apply user-provided configuration
 
     utils.fillIn(this, opts); // Fill in any missing options with the defaults
 
@@ -8033,11 +8457,31 @@
       if (Object.isPrototypeOf.call(Record$1, this.recordClass) && this.schema && this.schema.apply && this.applySchema) {
         this.schema.apply(this.recordClass.prototype);
       }
-    }
+    } // Create instatiator functions for each relationship type.
+
+
+    utils.forOwn(relationshipTypes, function (relDef, typeName) {
+      if (!Object.prototype.hasOwnProperty.call(_this2, typeName) && relDef.RelationshipClass) {
+        Object.defineProperty(_this2, typeName, {
+          value: function value(relatedMapper, def) {
+            return new relDef.RelationshipClass(relatedMapper, def).assignTo(_this2);
+          }
+        });
+      }
+    });
   }
 
   var Mapper$1 = Component$1.extend({
     constructor: Mapper,
+
+    /**
+     * Helper function that creates a notification function.
+     *
+     * @method Mapper#makeNotify
+     * @param {number} num The number of arguments the resultant notification function ignores.
+     * @since 3.1.0
+     */
+    makeNotify: makeNotify,
 
     /**
      * Mapper lifecycle hook called by {@link Mapper#count}. If this method
@@ -8510,7 +8954,7 @@
      * @since 3.0.0
      */
     create: function create(props, opts) {
-      var _this2 = this;
+      var _this3 = this;
 
       // Default values for arguments
       props || (props = {});
@@ -8527,23 +8971,23 @@
         // Allow for re-assignment from lifecycle hook
         props = _value !== undefined ? _value : props;
         opts.with || (opts.with = []);
-        return _this2._createParentRecordIfRequired(props, opts);
+        return _this3._createParentRecordIfRequired(props, opts);
       }).then(function (relationMap) {
         parentRelationMap = relationMap;
       }).then(function () {
         opts.op = 'create';
-        return _this2._invokeAdapterMethod(opts.op, props, opts);
+        return _this3._invokeAdapterMethod(opts.op, props, opts);
       }).then(function (result) {
         adapterResponse = result;
       }).then(function () {
         var createdProps = opts.raw ? adapterResponse.data : adapterResponse;
-        return _this2._createOrAssignChildRecordIfRequired(createdProps, {
+        return _this3._createOrAssignChildRecordIfRequired(createdProps, {
           opts: opts,
           parentRelationMap: parentRelationMap,
           originalProps: props
         });
       }).then(function (createdProps) {
-        return _this2._commitChanges(originalRecord, createdProps);
+        return _this3._commitChanges(originalRecord, createdProps);
       }).then(function (record) {
         if (opts.raw) {
           adapterResponse.data = record;
@@ -8551,18 +8995,18 @@
           adapterResponse = record;
         }
 
-        var result = _this2._end(adapterResponse, opts);
+        var result = _this3._end(adapterResponse, opts);
 
         opts.op = 'afterCreate';
-        return _this2._runHook(opts.op, props, opts, result);
+        return _this3._runHook(opts.op, props, opts, result);
       });
     },
     _commitChanges: function _commitChanges(recordOrRecords, newValues) {
-      var _this3 = this;
+      var _this4 = this;
 
       if (utils.isArray(recordOrRecords)) {
         return recordOrRecords.map(function (record, i) {
-          return _this3._commitChanges(record, newValues[i]);
+          return _this4._commitChanges(record, newValues[i]);
         });
       }
 
@@ -8753,7 +9197,7 @@
      * @tutorial ["http://www.js-data.io/v3.0/docs/saving-data","Saving data"]
      */
     createMany: function createMany(records, opts) {
-      var _this4 = this;
+      var _this5 = this;
 
       // Default values for arguments
       records || (records = []);
@@ -8773,7 +9217,7 @@
         var belongsToRelationData = {};
         opts.with || (opts.with = []);
         var tasks = [];
-        utils.forEachRelation(_this4, opts, function (def, optsCopy) {
+        utils.forEachRelation(_this5, opts, function (def, optsCopy) {
           var relationData = records.map(function (record) {
             return def.getLocalField(record);
           }).filter(Boolean);
@@ -8793,14 +9237,14 @@
         });
         return utils.Promise.all(tasks).then(function () {
           opts.op = 'createMany';
-          return _this4._invokeAdapterMethod(opts.op, records, opts);
+          return _this5._invokeAdapterMethod(opts.op, records, opts);
         }).then(function (result) {
           adapterResponse = result;
         }).then(function () {
           var createdRecordsData = opts.raw ? adapterResponse.data : adapterResponse; // Deep post-create hasOne relations
 
           tasks = [];
-          utils.forEachRelation(_this4, opts, function (def, optsCopy) {
+          utils.forEachRelation(_this5, opts, function (def, optsCopy) {
             var relationData = records.map(function (record) {
               return def.getLocalField(record);
             }).filter(Boolean);
@@ -8816,7 +9260,7 @@
 
             if (def.type === hasManyType) {
               // Not supported
-              _this4.log('warn', 'deep createMany of hasMany type not supported!');
+              _this5.log('warn', 'deep createMany of hasMany type not supported!');
             } else if (def.type === hasOneType) {
               createdRecordsData.forEach(function (createdRecordData, i) {
                 def.setForeignKey(createdRecordData, relationData[i]);
@@ -8837,7 +9281,7 @@
             }
           });
           return utils.Promise.all(tasks).then(function () {
-            return _this4._commitChanges(originalRecords, createdRecordsData);
+            return _this5._commitChanges(originalRecords, createdRecordsData);
           });
         });
       }).then(function (records) {
@@ -8847,10 +9291,10 @@
           adapterResponse = records;
         }
 
-        var result = _this4._end(adapterResponse, opts);
+        var result = _this5._end(adapterResponse, opts);
 
         opts.op = 'afterCreateMany';
-        return _this4._runHook(opts.op, records, opts, result);
+        return _this5._runHook(opts.op, records, opts, result);
       });
     },
 
@@ -8930,13 +9374,13 @@
      * @since 3.0.0
      */
     createRecord: function createRecord(props, opts) {
-      var _this5 = this;
+      var _this6 = this;
 
       props || (props = {});
 
       if (utils.isArray(props)) {
         return props.map(function (_props) {
-          return _this5.createRecord(_props, opts);
+          return _this6.createRecord(_props, opts);
         });
       }
 
@@ -8964,7 +9408,7 @@
      * @since 3.0.0
      */
     crud: function crud(method) {
-      var _this6 = this;
+      var _this7 = this;
 
       for (var _len2 = arguments.length, args = new Array(_len2 > 1 ? _len2 - 1 : 0), _key2 = 1; _key2 < _len2; _key2++) {
         args[_key2 - 1] = arguments[_key2];
@@ -8994,7 +9438,7 @@
 
       op = opts.op = before;
       return utils.resolve(this[op].apply(this, _toConsumableArray(args))).then(function (_value) {
-        var _this6$getAdapter;
+        var _this7$getAdapter;
 
         if (args[config.beforeAssign] !== undefined) {
           // Allow for re-assignment from lifecycle hook
@@ -9003,11 +9447,11 @@
 
 
         op = opts.op = method;
-        args = config.adapterArgs ? config.adapterArgs.apply(config, [_this6].concat(_toConsumableArray(args))) : args;
+        args = config.adapterArgs ? config.adapterArgs.apply(config, [_this7].concat(_toConsumableArray(args))) : args;
 
-        _this6.dbg.apply(_this6, [op].concat(_toConsumableArray(args)));
+        _this7.dbg.apply(_this7, [op].concat(_toConsumableArray(args)));
 
-        return utils.resolve((_this6$getAdapter = _this6.getAdapter(adapter))[op].apply(_this6$getAdapter, [_this6].concat(_toConsumableArray(args))));
+        return utils.resolve((_this7$getAdapter = _this7.getAdapter(adapter))[op].apply(_this7$getAdapter, [_this7].concat(_toConsumableArray(args))));
       }).then(function (result) {
         // force noValidate on find/findAll
         var noValidate = /find/.test(op) || opts.noValidate;
@@ -9016,11 +9460,11 @@
           noValidate: noValidate
         });
 
-        result = _this6._end(result, _opts, !!config.skip);
+        result = _this7._end(result, _opts, !!config.skip);
         args.push(result); // after lifecycle hook
 
         op = opts.op = after;
-        return utils.resolve(_this6[op].apply(_this6, _toConsumableArray(args))).then(function (_result) {
+        return utils.resolve(_this7[op].apply(_this7, _toConsumableArray(args))).then(function (_result) {
           // Allow for re-assignment from lifecycle hook
           return _result === undefined ? result : _result;
         });
@@ -9572,7 +10016,7 @@
       });
     },
     _invokeAdapterMethod: function _invokeAdapterMethod(method, propsOrRecords, opts) {
-      var _this7 = this;
+      var _this8 = this;
 
       var conversionOptions = {
         with: opts.pass || []
@@ -9582,7 +10026,7 @@
 
       if (utils.isArray(propsOrRecords)) {
         object = propsOrRecords.map(function (record) {
-          return _this7.toJSON(record, conversionOptions);
+          return _this8.toJSON(record, conversionOptions);
         });
       } else {
         object = this.toJSON(propsOrRecords, conversionOptions);
@@ -9668,14 +10112,14 @@
      * @since 3.0.0
      */
     toJSON: function toJSON(records, opts) {
-      var _this8 = this;
+      var _this9 = this;
 
       var record;
       opts || (opts = {});
 
       if (utils.isArray(records)) {
         return records.map(function (record) {
-          return _this8.toJSON(record, opts);
+          return _this9.toJSON(record, opts);
         });
       } else {
         record = records;
@@ -10095,9 +10539,9 @@
      * @ignore
      */
     defineRelations: function defineRelations() {
-      var _this9 = this;
+      var _this10 = this;
 
-      // Setup the mapper's relations, including generating Mapper#relationList
+      // Set up the mapper's relations, including generating Mapper#relationList
       // and Mapper#relationFields
       utils.forOwn(this.relations, function (group, type) {
         utils.forOwn(group, function (relations, _name) {
@@ -10106,17 +10550,17 @@
           }
 
           relations.forEach(function (def) {
-            var relatedMapper = _this9.datastore.getMapperByName(_name) || _name;
+            var relatedMapper = _this10.datastore.getMapperByName(_name) || _name;
 
             def.getRelation = function () {
-              return _this9.datastore.getMapper(_name);
+              return _this10.datastore.getMapper(_name);
             };
 
-            if (typeof Relation[type] !== 'function') {
+            if (typeof _this10[type] !== 'function') {
               throw utils.err(DOMAIN$6, 'defineRelations')(400, 'relation type (hasOne, hasMany, etc)', type, true);
             }
 
-            _this9[type](relatedMapper, def);
+            _this10[type](relatedMapper, def);
           });
         });
       });
@@ -13964,408 +14408,57 @@
 
     utils.fillIn(opts, DATASTORE_DEFAULTS);
     opts.collectionClass || (opts.collectionClass = LinkedCollection$1);
+    this.relationshipTypes || (this.relationshipTypes = {});
+    this.registerRelationshipType(belongsToType, BelongsToRelation, createDescriptor$2);
+    this.registerRelationshipType(hasManyType, HasManyRelation, createDescriptor);
+    this.registerRelationshipType(hasOneType, HasOneRelation, createDescriptor$1);
     SimpleStore$1.call(this, opts);
   }
 
   var props$2 = {
     constructor: DataStore,
     defineMapper: function defineMapper(name, opts) {
-      // Complexity of this method is beyond simply using => functions to bind context
-      var self = this;
+      // This is likely only needed for tests since they don't pass in any opts.
+      opts || (opts = {}); // Complexity of this method is beyond simply using => functions to bind context
+
+      var self = this; // Set the relationship types so that instantiator functions can be bound
+      // to the mapper inside its constructor.
+
+      opts._relationshipTypes || (opts._relationshipTypes = this.relationshipTypes);
       var mapper = SimpleStore$1.prototype.defineMapper.call(self, name, opts);
-      var idAttribute = mapper.idAttribute;
-      var collection = this.getCollection(name);
       mapper.relationList.forEach(function (def) {
-        var relation = def.relation;
         var localField = def.localField;
         var path = "links.".concat(localField);
-        var foreignKey = def.foreignKey;
-        var type = def.type;
-        var updateOpts = {
-          index: foreignKey
-        };
-        var descriptor;
 
         var getter = function getter() {
           return this._get(path);
         };
 
-        if (type === belongsToType) {
-          if (!collection.indexes[foreignKey]) {
-            collection.createIndex(foreignKey);
-          }
+        var descriptor;
 
-          descriptor = {
-            get: getter,
-            // e.g. profile.user = someUser
-            // or comment.post = somePost
-            set: function set(record) {
-              // e.g. const otherUser = profile.user
-              var currentParent = this._get(path); // e.g. profile.user === someUser
-
-
-              if (record === currentParent) {
-                return currentParent;
-              }
-
-              var id = utils.get(this, idAttribute);
-              var inverseDef = def.getInverse(mapper); // e.g. profile.user !== someUser
-              // or comment.post !== somePost
-
-              if (currentParent && inverseDef) {
-                this.removeInverseRelation(currentParent, id, inverseDef, idAttribute);
-              }
-
-              if (record) {
-                // e.g. profile.user = someUser
-                var relatedIdAttribute = def.getRelation().idAttribute;
-                var relatedId = utils.get(record, relatedIdAttribute); // Prefer store record
-
-                if (relatedId !== undefined && this._get('$')) {
-                  record = self.get(relation, relatedId) || record;
-                } // Set locals
-                // e.g. profile.user = someUser
-                // or comment.post = somePost
-
-
-                safeSetLink(this, localField, record);
-                safeSetProp(this, foreignKey, relatedId);
-                collection.updateIndex(this, updateOpts);
-
-                if (inverseDef) {
-                  this.setupInverseRelation(record, id, inverseDef, idAttribute);
-                }
-              } else {
-                // Unset in-memory link only
-                // e.g. profile.user = undefined
-                // or comment.post = undefined
-                safeSetLink(this, localField, undefined);
-              }
-
-              return record;
-            }
-          };
-          var foreignKeyDescriptor = Object.getOwnPropertyDescriptor(mapper.recordClass.prototype, foreignKey);
-
-          if (!foreignKeyDescriptor) {
-            foreignKeyDescriptor = {
-              enumerable: true
-            };
-          }
-
-          var originalGet = foreignKeyDescriptor.get;
-
-          foreignKeyDescriptor.get = function () {
-            if (originalGet) {
-              return originalGet.call(this);
-            }
-
-            return this._get("props.".concat(foreignKey));
-          };
-
-          var originalSet = foreignKeyDescriptor.set;
-
-          foreignKeyDescriptor.set = function (value) {
-            var _this = this;
-
-            if (originalSet) {
-              originalSet.call(this, value);
-            }
-
-            var currentParent = utils.get(this, localField);
-            var id = utils.get(this, idAttribute);
-            var inverseDef = def.getInverse(mapper);
-            var currentParentId = currentParent ? utils.get(currentParent, def.getRelation().idAttribute) : undefined;
-
-            if (inverseDef && currentParent && currentParentId !== undefined && currentParentId !== value) {
-              if (inverseDef.type === hasOneType) {
-                safeSetLink(currentParent, inverseDef.localField, undefined);
-              } else if (inverseDef.type === hasManyType) {
-                var children = utils.get(currentParent, inverseDef.localField);
-
-                if (id === undefined) {
-                  utils.remove(children, function (child) {
-                    return child === _this;
-                  });
-                } else {
-                  utils.remove(children, function (child) {
-                    return child === _this || id === utils.get(child, idAttribute);
-                  });
-                }
-              }
-            }
-
-            safeSetProp(this, foreignKey, value);
-            collection.updateIndex(this, updateOpts);
-
-            if (value === undefined || value === null) {
-              if (currentParentId !== undefined) {
-                // Unset locals
-                utils.set(this, localField, undefined);
-              }
-            } else if (this._get('$')) {
-              var storeRecord = self.get(relation, value);
-
-              if (storeRecord) {
-                utils.set(this, localField, storeRecord);
-              }
-            }
-          };
-
-          Object.defineProperty(mapper.recordClass.prototype, foreignKey, foreignKeyDescriptor);
-        } else if (type === hasManyType) {
-          var localKeys = def.localKeys;
-          var foreignKeys = def.foreignKeys; // TODO: Handle case when belongsTo relation isn't ever defined
-
-          if (self._collections[relation] && foreignKey && !self.getCollection(relation).indexes[foreignKey]) {
-            self.getCollection(relation).createIndex(foreignKey);
-          }
-
-          descriptor = {
-            get: function get() {
-              var current = getter.call(this);
-
-              if (!current) {
-                this._set(path, []);
-              }
-
-              return getter.call(this);
-            },
-            // e.g. post.comments = someComments
-            // or user.groups = someGroups
-            // or group.users = someUsers
-            set: function set(records) {
-              var _this2 = this;
-
-              if (records && !utils.isArray(records)) {
-                records = [records];
-              }
-
-              var id = utils.get(this, idAttribute);
-              var relatedIdAttribute = def.getRelation().idAttribute;
-              var inverseDef = def.getInverse(mapper);
-              var inverseLocalField = inverseDef.localField;
-              var current = this._get(path) || [];
-              var toLink = [];
-              var toLinkIds = {};
-
-              if (records) {
-                records.forEach(function (record) {
-                  // e.g. comment.id
-                  var relatedId = utils.get(record, relatedIdAttribute);
-                  var currentParent = utils.get(record, inverseLocalField);
-
-                  if (currentParent && currentParent !== _this2) {
-                    var currentChildrenOfParent = utils.get(currentParent, localField); // e.g. somePost.comments.remove(comment)
-
-                    if (relatedId === undefined) {
-                      utils.remove(currentChildrenOfParent, function (child) {
-                        return child === record;
-                      });
-                    } else {
-                      utils.remove(currentChildrenOfParent, function (child) {
-                        return child === record || relatedId === utils.get(child, relatedIdAttribute);
-                      });
-                    }
-                  }
-
-                  if (relatedId !== undefined) {
-                    if (_this2._get('$')) {
-                      // Prefer store record
-                      record = self.get(relation, relatedId) || record;
-                    } // e.g. toLinkIds[comment.id] = comment
-
-
-                    toLinkIds[relatedId] = record;
-                  }
-
-                  toLink.push(record);
-                });
-              } // e.g. post.comments = someComments
-
-
-              if (foreignKey) {
-                current.forEach(function (record) {
-                  // e.g. comment.id
-                  var relatedId = utils.get(record, relatedIdAttribute);
-
-                  if (relatedId === undefined && toLink.indexOf(record) === -1 || relatedId !== undefined && !(relatedId in toLinkIds)) {
-                    // Update (unset) inverse relation
-                    if (records) {
-                      // e.g. comment.post_id = undefined
-                      safeSetProp(record, foreignKey, undefined); // e.g. CommentCollection.updateIndex(comment, { index: 'post_id' })
-
-                      self.getCollection(relation).updateIndex(record, updateOpts);
-                    } // e.g. comment.post = undefined
-
-
-                    safeSetLink(record, inverseLocalField, undefined);
-                  }
-                });
-                toLink.forEach(function (record) {
-                  // Update (set) inverse relation
-                  // e.g. comment.post_id = post.id
-                  safeSetProp(record, foreignKey, id); // e.g. CommentCollection.updateIndex(comment, { index: 'post_id' })
-
-                  self.getCollection(relation).updateIndex(record, updateOpts); // e.g. comment.post = post
-
-                  safeSetLink(record, inverseLocalField, _this2);
-                });
-              } else if (localKeys) {
-                // Update locals
-                // e.g. group.users = someUsers
-                // Update (set) inverse relation
-                var ids = toLink.map(function (child) {
-                  return utils.get(child, relatedIdAttribute);
-                }).filter(function (id) {
-                  return id !== undefined;
-                }); // e.g. group.user_ids = [1,2,3,...]
-
-                utils.set(this, localKeys, ids); // Update (unset) inverse relation
-
-                if (inverseDef.foreignKeys) {
-                  current.forEach(function (child) {
-                    var relatedId = utils.get(child, relatedIdAttribute);
-
-                    if (relatedId === undefined && toLink.indexOf(child) === -1 || relatedId !== undefined && !(relatedId in toLinkIds)) {
-                      // Update inverse relation
-                      // safeSetLink(child, inverseLocalField, undefined)
-                      var parents = utils.get(child, inverseLocalField) || []; // e.g. someUser.groups.remove(group)
-
-                      if (id === undefined) {
-                        utils.remove(parents, function (parent) {
-                          return parent === _this2;
-                        });
-                      } else {
-                        utils.remove(parents, function (parent) {
-                          return parent === _this2 || id === utils.get(parent, idAttribute);
-                        });
-                      }
-                    }
-                  });
-                  toLink.forEach(function (child) {
-                    // Update (set) inverse relation
-                    var parents = utils.get(child, inverseLocalField); // e.g. someUser.groups.push(group)
-
-                    if (id === undefined) {
-                      utils.noDupeAdd(parents, _this2, function (parent) {
-                        return parent === _this2;
-                      });
-                    } else {
-                      utils.noDupeAdd(parents, _this2, function (parent) {
-                        return parent === _this2 || id === utils.get(parent, idAttribute);
-                      });
-                    }
-                  });
-                }
-              } else if (foreignKeys) {
-                // e.g. user.groups = someGroups
-                // Update (unset) inverse relation
-                current.forEach(function (parent) {
-                  var ids = utils.get(parent, foreignKeys) || []; // e.g. someGroup.user_ids.remove(user.id)
-
-                  utils.remove(ids, function (_key) {
-                    return id === _key;
-                  });
-                  var children = utils.get(parent, inverseLocalField); // e.g. someGroup.users.remove(user)
-
-                  if (id === undefined) {
-                    utils.remove(children, function (child) {
-                      return child === _this2;
-                    });
-                  } else {
-                    utils.remove(children, function (child) {
-                      return child === _this2 || id === utils.get(child, idAttribute);
-                    });
-                  }
-                }); // Update (set) inverse relation
-
-                toLink.forEach(function (parent) {
-                  var ids = utils.get(parent, foreignKeys) || [];
-                  utils.noDupeAdd(ids, id, function (_key) {
-                    return id === _key;
-                  });
-                  var children = utils.get(parent, inverseLocalField);
-
-                  if (id === undefined) {
-                    utils.noDupeAdd(children, _this2, function (child) {
-                      return child === _this2;
-                    });
-                  } else {
-                    utils.noDupeAdd(children, _this2, function (child) {
-                      return child === _this2 || id === utils.get(child, idAttribute);
-                    });
-                  }
-                });
-              }
-
-              this._set(path, toLink);
-
-              return toLink;
-            }
-          };
-        } else if (type === hasOneType) {
-          // TODO: Handle case when belongsTo relation isn't ever defined
-          if (self._collections[relation] && foreignKey && !self.getCollection(relation).indexes[foreignKey]) {
-            self.getCollection(relation).createIndex(foreignKey);
-          }
-
-          descriptor = {
-            get: getter,
-            // e.g. user.profile = someProfile
-            set: function set(record) {
-              var current = this._get(path);
-
-              if (record === current) {
-                return current;
-              }
-
-              var inverseLocalField = def.getInverse(mapper).localField; // Update (unset) inverse relation
-
-              if (current) {
-                safeSetProp(current, foreignKey, undefined);
-                self.getCollection(relation).updateIndex(current, updateOpts);
-                safeSetLink(current, inverseLocalField, undefined);
-              }
-
-              if (record) {
-                var relatedId = utils.get(record, def.getRelation().idAttribute); // Prefer store record
-
-                if (relatedId !== undefined) {
-                  record = self.get(relation, relatedId) || record;
-                } // Set locals
-
-
-                safeSetLink(this, localField, record); // Update (set) inverse relation
-
-                safeSetProp(record, foreignKey, utils.get(this, idAttribute));
-                self.getCollection(relation).updateIndex(record, updateOpts);
-                safeSetLink(record, inverseLocalField, this);
-              } else {
-                // Unset locals
-                safeSetLink(this, localField, undefined);
-              }
-
-              return record;
-            }
-          };
+        if (Object.prototype.hasOwnProperty.call(self.relationshipTypes, def.type)) {
+          descriptor = self.relationshipTypes[def.type].createDescriptor(mapper, def, name, self);
         }
 
         if (descriptor) {
+          if (!Object.prototype.hasOwnProperty.call(descriptor, 'get')) {
+            descriptor.get = getter;
+          }
+
           descriptor.enumerable = def.enumerable === undefined ? false : def.enumerable;
 
           if (def.get) {
             var origGet = descriptor.get;
 
             descriptor.get = function () {
-              var _this3 = this;
+              var _this = this;
 
               return def.get(def, this, function () {
-                for (var _len = arguments.length, args = new Array(_len), _key2 = 0; _key2 < _len; _key2++) {
-                  args[_key2] = arguments[_key2];
+                for (var _len = arguments.length, args = new Array(_len), _key = 0; _key < _len; _key++) {
+                  args[_key] = arguments[_key];
                 }
 
-                return origGet.apply(_this3, args);
+                return origGet.apply(_this, args);
               });
             };
           }
@@ -14374,21 +14467,21 @@
             var origSet = descriptor.set;
 
             descriptor.set = function (related) {
-              var _this4 = this;
+              var _this2 = this;
 
               return def.set(def, this, related, function (value) {
-                return origSet.call(_this4, value === undefined ? related : value);
+                return origSet.call(_this2, value === undefined ? related : value);
               });
             };
           }
 
-          Object.defineProperty(mapper.recordClass.prototype, localField, descriptor);
+          Object.defineProperty(mapper.recordClass.prototype, def.localField, descriptor);
         }
       });
       return mapper;
     },
     destroy: function destroy(name, id, opts) {
-      var _this5 = this;
+      var _this3 = this;
 
       opts || (opts = {});
       return SimpleStore$1.prototype.destroy.call(this, name, id, opts).then(function (result) {
@@ -14400,11 +14493,11 @@
           record = result;
         }
 
-        if (record && _this5.unlinkOnDestroy) {
+        if (record && _this3.unlinkOnDestroy) {
           var _opts = utils.plainCopy(opts);
 
           _opts.withAll = true;
-          utils.forEachRelation(_this5.getMapper(name), _opts, function (def) {
+          utils.forEachRelation(_this3.getMapper(name), _opts, function (def) {
             utils.set(record, def.localField, undefined);
           });
         }
@@ -14413,7 +14506,7 @@
       });
     },
     destroyAll: function destroyAll(name, query, opts) {
-      var _this6 = this;
+      var _this4 = this;
 
       opts || (opts = {});
       return SimpleStore$1.prototype.destroyAll.call(this, name, query, opts).then(function (result) {
@@ -14425,11 +14518,11 @@
           records = result;
         }
 
-        if (records && records.length && _this6.unlinkOnDestroy) {
+        if (records && records.length && _this4.unlinkOnDestroy) {
           var _opts = utils.plainCopy(opts);
 
           _opts.withAll = true;
-          utils.forEachRelation(_this6.getMapper(name), _opts, function (def) {
+          utils.forEachRelation(_this4.getMapper(name), _opts, function (def) {
             records.forEach(function (record) {
               utils.set(record, def.localField, undefined);
             });
@@ -14438,6 +14531,12 @@
 
         return result;
       });
+    },
+    registerRelationshipType: function registerRelationshipType(type, relationshipClass, descriptor) {
+      this.relationshipTypes[type] = {
+        RelationshipClass: relationshipClass,
+        createDescriptor: descriptor
+      };
     }
   };
   var DataStore$1 = SimpleStore$1.extend(props$2);
@@ -14556,6 +14655,7 @@
   exports.Mapper = Mapper$1;
   exports.Query = Query$1;
   exports.Record = Record$1;
+  exports.Relation = Relation;
   exports.Schema = Schema$1;
   exports.Settable = Settable;
   exports.SimpleStore = SimpleStore$1;
