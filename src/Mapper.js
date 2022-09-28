@@ -2,13 +2,13 @@ import utils from './utils'
 import Component from './Component'
 import Record from './Record'
 import Schema from './Schema'
+import { createDescriptor as createBelongsToDescriptor, BelongsToRelation, belongsToType } from './Relation/BelongsTo'
+import { createDescriptor as createHasManyDescriptor, HasManyRelation, hasManyType } from './Relation/HasMany'
+import { createDescriptor as createHasOneDescriptor, HasOneRelation, hasOneType } from './Relation/HasOne'
 import {
   belongsTo,
-  belongsToType,
   hasMany,
-  hasManyType,
-  hasOne,
-  hasOneType
+  hasOne
 } from './decorators'
 
 const DOMAIN = 'Mapper'
@@ -145,6 +145,20 @@ const MAPPER_DEFAULTS = {
    * @tutorial ["http://www.js-data.io/v3.0/docs/connecting-to-a-data-source","Connecting to a data source"]
    */
   _adapters: {},
+
+  /**
+   * Hash of registered relationship types. Don't modify directly. Use
+   * {@link DataStore#registerRelationshipType} instead.
+   *
+   * @default {}
+   * @name Mapper#_relationshipTypes
+   * @since 3.1.0
+   */
+  _relationshipTypes: {
+    belongsToType: { RelationshipClass: BelongsToRelation, createDescriptor: createBelongsToDescriptor },
+    hasManyType: { RelationshipClass: HasManyRelation, createDescriptor: createHasManyDescriptor },
+    hasOneType: { RelationshipClass: HasOneRelation, createDescriptor: createHasOneDescriptor }
+  },
 
   /**
    * Whether {@link Mapper#beforeCreate} and {@link Mapper#beforeCreateMany}
@@ -441,7 +455,7 @@ function Mapper (opts) {
   })
 
   // Move relationship types out of the opts for later use.
-  const relationshipTypes = opts._relationshipTypes || {}
+  const relationshipTypes = opts._relationshipTypes || MAPPER_DEFAULTS._relationshipTypes
   delete opts._relationshipTypes
 
   // Apply user-provided configuration
