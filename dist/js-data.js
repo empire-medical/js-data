@@ -1,6 +1,6 @@
 /*!
 * js-data
-* @version 3.0.11 - Homepage <http://www.js-data.io/>
+* @version 3.1.0 - Homepage <http://www.js-data.io/>
 * @author js-data project authors
 * @copyright (c) 2014-2016 js-data project authors
 * @license MIT <https://github.com/js-data/js-data/blob/master/LICENSE>
@@ -14640,10 +14640,10 @@
    */
 
   var version = {
-  full: '3.0.11',
+  full: '3.1.0',
   major: 3,
-  minor: 0,
-  patch: 11
+  minor: 1,
+  patch: 0
 };
 
   exports.Collection = Collection$1;

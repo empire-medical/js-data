@@ -1,6 +1,6 @@
 /*!
 * js-data
-* @version 3.0.11 - Homepage <http://www.js-data.io/>
+* @version 3.1.0 - Homepage <http://www.js-data.io/>
 * @author js-data project authors
 * @copyright (c) 2014-2016 js-data project authors
 * @license MIT <https://github.com/js-data/js-data/blob/master/LICENSE>
@@ -14634,10 +14634,10 @@ var DataStore$1 = SimpleStore$1.extend(props$2);
  */
 
 var version = {
-  full: '3.0.11',
+  full: '3.1.0',
   major: 3,
-  minor: 0,
-  patch: 11
+  minor: 1,
+  patch: 0
 };
 
 export { Collection$1 as Collection, Component$1 as Component, Container, DataStore$1 as DataStore, Index, LinkedCollection$1 as LinkedCollection, Mapper$1 as Mapper, Query$1 as Query, Record$1 as Record, Relation, Schema$1 as Schema, Settable, SimpleStore$1 as SimpleStore, belongsTo, belongsToType, hasMany, hasManyType, hasOne, hasOneType, utils, version };
