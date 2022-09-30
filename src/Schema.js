@@ -1087,6 +1087,8 @@ export default Component.extend({
       if (!_get(noValidatePath)) {
         const errors = schema.validate(value, { path: [prop] })
         if (errors) {
+          this.dbg('Schema#makeDescriptor', validationFailureMsg, errors, prop, value, schema);
+
           // Immediately throw an error, preventing the record from getting into
           // an invalid state
           const error = new Error(validationFailureMsg)
