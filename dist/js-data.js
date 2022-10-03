@@ -7694,8 +7694,9 @@
           });
 
           if (errors) {
-            // Immediately throw an error, preventing the record from getting into
+            this.dbg('Schema#makeDescriptor', validationFailureMsg, errors, prop, value, schema); // Immediately throw an error, preventing the record from getting into
             // an invalid state
+
             var error = new Error(validationFailureMsg);
             error.errors = errors;
             throw error;
